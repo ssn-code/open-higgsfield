@@ -12,14 +12,20 @@ import {
   encodeCredentials,
   parseCredentialInput,
 } from "./credentials";
+import type { StoredCredentials } from "./credentials";
+import { getNimJobStatus, isNimRequest, submitNvidiaGeneration } from "./nvidia";
 import { createPlatformClient } from "./platform";
 import type { StatusResult } from "./platform";
 import { toPlatform } from "./to-platform";
 
 export async function savePlatformCredentials(data: unknown) {
-  const { apiKey } = parseCredentialInput(data);
+  const credentials = parseCredentialInput(data);
   const jar = await cookies();
-  jar.set(PLATFORM_KEY_COOKIE, encodeCredentials(apiKey), PLATFORM_KEY_COOKIE_OPTIONS);
+  jar.set(
+    PLATFORM_KEY_COOKIE,
+    encodeCredentials(credentials.apiKey, credentials.provider, credentials.baseUrl),
+    PLATFORM_KEY_COOKIE_OPTIONS,
+  );
 }
 
 export async function clearPlatformCredentials() {
@@ -31,12 +37,35 @@ export async function hasPlatformCredentials() {
   return (await readStoredCredentials()) !== null;
 }
 
+export async function getCredentialsInfo() {
+  const stored = await readStoredCredentials();
+  if (!stored) return { configured: false, provider: null, baseUrl: null };
+  return {
+    configured: true,
+    provider: stored.provider,
+    baseUrl: stored.baseUrl ?? null,
+  };
+}
+
 export async function submitGeneration(plane: GenerationPlane) {
   const model = getModel(plane.model);
   const parsed: GenerationPlane = {
     ...plane,
     settings: parseSettings(model, plane.settings),
   };
+  const credentials = await readStoredCredentials();
+  if (!credentials) throw new MissingCredentialsError();
+
+  const isNvidia =
+    model.provider === "nvidia" ||
+    credentials.provider === "nvidia" ||
+    model.id.startsWith("nvidia-") ||
+    model.id.startsWith("nim-");
+
+  if (isNvidia) {
+    return submitNvidiaGeneration(credentials, parsed, model);
+  }
+
   const { path, body } = toPlatform(parsed);
   return createPlatformClient(await readCredentials()).submit(path, body);
 }
@@ -47,11 +76,23 @@ export async function submitGeneration(plane: GenerationPlane) {
     genuinely parallel. */
 export async function getGenerationStatuses(data: unknown): Promise<StatusResult[]> {
   const requestIds = parseRequestIds(data);
-  const client = createPlatformClient(await readCredentials());
+  const credentials = await readStoredCredentials();
+  if (!credentials) throw new MissingCredentialsError();
+
+  let hfClient: ReturnType<typeof createPlatformClient> | null = null;
+
   return Promise.all(
     requestIds.map(async (requestId): Promise<StatusResult> => {
       try {
-        return { requestId, status: await client.status(requestId) };
+        if (isNimRequest(requestId)) {
+          return { requestId, status: getNimJobStatus(requestId) };
+        }
+        if (!hfClient) {
+          const baseUrl = process.env.HF_API_BASE_URL;
+          if (!baseUrl) throw new Error("Missing HF_API_BASE_URL");
+          hfClient = createPlatformClient({ ...credentials, baseUrl });
+        }
+        return { requestId, status: await hfClient.status(requestId) };
       } catch (caught) {
         return { requestId, error: caught instanceof Error ? caught.message : String(caught) };
       }
@@ -59,7 +100,7 @@ export async function getGenerationStatuses(data: unknown): Promise<StatusResult
   );
 }
 
-async function readStoredCredentials() {
+async function readStoredCredentials(): Promise<StoredCredentials | null> {
   const jar = await cookies();
   return decodeCredentials(jar.get(PLATFORM_KEY_COOKIE)?.value);
 }

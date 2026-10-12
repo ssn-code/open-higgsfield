@@ -35,8 +35,10 @@ import { wan27 } from "./wan-2.7";
 import { wan3 } from "./wan-3";
 import { wan3Prime } from "./wan-3-prime";
 import { zImageTurbo } from "./z-image-turbo";
+import { NVIDIA_MODELS } from "./nvidia-models";
 
 export const MODELS: readonly ModelEntry[] = [
+  ...NVIDIA_MODELS,
   soul2,
   soulCinema,
   seedance25,

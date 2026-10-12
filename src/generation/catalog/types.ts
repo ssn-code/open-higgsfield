@@ -27,6 +27,8 @@ export type ModelEntry = {
   settings: Record<string, SettingField>;
   /** Submit paths when the shared mapper is enough. Soul, Kling 3, and Seedance keep custom maps. */
   paths?: PlatformPaths;
+  provider?: "higgsfield" | "nvidia";
+  nimModel?: string;
 };
 
 export type GenerationPlane = {
